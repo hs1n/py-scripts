@@ -1,0 +1,148 @@
+#!/opt/homebrew/Caskroom/miniconda/base/bin/python3
+
+import os, os.path
+import argparse
+import shutil
+
+from deepface import DeepFace
+from tqdm import tqdm
+
+EXTENSIONS_WHITELIST = [".jpg", ".png"]
+
+
+def move_image_to_target_dir(target_path, tier, target_file):
+    source_path = f"{target_path}{os.sep}{target_file}"
+    tier_path = f'{target_path}{os.sep}{"T"}{tier}'
+    destination_path = f"{tier_path}{os.sep}{target_file}"
+
+    if not os.path.exists(tier_path):
+        os.mkdir(tier_path)
+
+    shutil.move(source_path, destination_path)
+
+
+def filter_by_extensions(images_path, unprocess_imgs = []):
+    """ filter files under image_path by extensions
+
+    Args:
+        images_path (string): path of image(s)
+        unprocess_imgs (list, optional): _description_. Defaults to [].
+
+    Returns:
+        list: [] of image file names, e.g. ['a.jpg', 'b.png']
+    """
+    for filename in os.listdir(images_path):
+        extension = os.path.splitext(filename)[1]
+        if extension.lower() not in EXTENSIONS_WHITELIST:
+            continue
+        unprocess_imgs.append(filename)
+    return unprocess_imgs
+
+def find(params, unprocess_imgs):
+    results = []
+    
+    for processing_img in tqdm(unprocess_imgs):
+        json = {}
+        
+        df = DeepFace.find(img_path=params.images_path + os.sep + processing_img, db_path=params.class_path,
+                           enforce_detection = False, model_name = 'ArcFace', detector_backend = 'retinaface', silent=True)
+        
+        num_of_sample = 1
+        if len(unprocess_imgs) > 3:
+            num_of_sample = 3
+        
+        # append closest result
+        closest = df.pop().nsmallest(num_of_sample, 'ArcFace_cosine')
+
+        if (len(closest) > 0):
+            json['dist'] = closest['ArcFace_cosine'].mean()
+        else:
+            json['dist'] = 1.0
+
+        json['tier'] = get_similarity_tier(json['dist'])
+
+        json['img'] = processing_img
+        
+        if params.face_analyze:
+            analyze_result = DeepFace.analyze(params.images_path + os.sep + processing_img)
+            json['analyze'] =analyze_result
+            # TODO pretty print
+        
+        if params.verbose:
+            print(json)
+        
+        results.append(json)
+    return results
+
+def get_similarity_tier(distance):
+    """get tier by given distance between 0 to 0.68
+
+    Args:
+        distance (double): between 0 to 0.68
+
+    Returns:
+        int: tier between 0 to 6
+    """
+    if (distance < 0.1):
+        tier = 0
+    elif (distance < 0.2):
+        tier = 1
+    elif (distance < 0.3):
+        tier = 2
+    elif (distance < 0.4):
+        tier = 3
+    elif (distance < 0.5):
+        tier = 4
+    elif (distance < 0.6):
+        tier = 5
+    else:
+        tier = 6
+    
+    return tier
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="face recognition")
+    
+    parser.add_argument(
+        "--class_path",
+        type=str,
+        nargs="*",
+        default="",
+        help="class folder, please put photos of same person",
+    )
+
+    parser.add_argument(
+        "--images_path", type=str, nargs="*", default=os.getcwd(), help="specify image path"
+    )
+    
+    parser.add_argument(
+        "--move_tiers", action="store_true", default=False, help="create tier dirs and move images to correspond dir"
+    )
+    
+    parser.add_argument(
+        "--face_analyze", action="store_true", default=False, help=""
+    )
+    
+    parser.add_argument(
+        "--verbose", action="store_true", default=False, help=""
+    )
+    
+        
+    
+    params = parser.parse_args()
+        
+    if (len(params.class_path) == 0):
+        print(" --class_path not specified.")
+        exit()
+    
+    # filter images, only process certain extensions
+    unprocess_imgs = filter_by_extensions(params.images_path)
+
+    print(' - Processing images: {}'.format(len(unprocess_imgs)))
+    results = find(params, unprocess_imgs)
+    
+    # sort and print
+    for result in sorted(results, key= lambda json: json['dist']):        
+        print(" +{} {:20s}, dist:{:.4f}".format(result['tier'], result['img'], result['dist']))
+        if (params.move_tiers):
+            move_image_to_target_dir(os.getcwd(), result['tier'], result['img'])
